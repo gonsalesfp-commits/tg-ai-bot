@@ -17,7 +17,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # GOOGLE SHEETS
 
 scopes = [
-    "https://www.googleapis.com/auth/spreadsheets"
+    "https://www.googleapis.com/auth/spreadsheets",
+
+    "https://www.googleapis.com/auth/drive"
 ]
 
 creds = Credentials.from_service_account_file(
