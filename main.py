@@ -1,12 +1,17 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
+
 from openai import OpenAI
 
 import asyncio
 import os
 import base64
 import json
+import re
 import gspread
 
 from google.oauth2.service_account import Credentials
@@ -48,9 +53,11 @@ creds = Credentials.from_service_account_file(
 
 gs_client = gspread.authorize(creds)
 
-spreadsheet = gs_client.open("TEST BOT")
+# DEFAULT SPREADSHEET
 
-main_sheet = spreadsheet.sheet1
+default_spreadsheet = gs_client.open("TEST BOT")
+
+main_sheet = default_spreadsheet.sheet1
 
 # =========================================
 # MEMORY
@@ -62,7 +69,7 @@ chat_history = {}
 
 active_spreadsheets = {}
 
-MAX_HISTORY = 60
+MAX_HISTORY = 80
 
 # =========================================
 # KEYBOARD
@@ -71,11 +78,12 @@ MAX_HISTORY = 60
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="💬 Chat Mode"),
-            KeyboardButton(text="📊 Sheet Mode")
+            KeyboardButton(text="💬 Chat"),
+            KeyboardButton(text="📊 Sheets")
         ]
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
+    input_field_placeholder="Choose mode"
 )
 
 # =========================================
@@ -89,15 +97,15 @@ async def start(message: types.Message):
 
     user_modes[chat_id] = "chat"
 
-    active_spreadsheets[chat_id] = spreadsheet
+    active_spreadsheets[chat_id] = default_spreadsheet
 
     await message.answer(
-        "AI Operator Online",
+        "Choose mode:",
         reply_markup=main_keyboard
     )
 
 # =========================================
-# MODE COMMANDS
+# COMMANDS
 # =========================================
 
 @dp.message(Command("chat"))
@@ -116,7 +124,7 @@ async def set_sheet_mode(message: types.Message):
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Spreadsheet mode enabled",
+        "📊 Sheet mode enabled",
         reply_markup=main_keyboard
     )
 
@@ -124,8 +132,8 @@ async def set_sheet_mode(message: types.Message):
 # BUTTONS
 # =========================================
 
-@dp.message(lambda message: message.text == "💬 Chat Mode")
-async def button_chat(message: types.Message):
+@dp.message(lambda message: message.text == "💬 Chat")
+async def button_chat_mode(message: types.Message):
 
     user_modes[message.chat.id] = "chat"
 
@@ -134,15 +142,31 @@ async def button_chat(message: types.Message):
         reply_markup=main_keyboard
     )
 
-@dp.message(lambda message: message.text == "📊 Sheet Mode")
-async def button_sheet(message: types.Message):
+@dp.message(lambda message: message.text == "📊 Sheets")
+async def button_sheet_mode(message: types.Message):
 
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Spreadsheet mode enabled",
+        "📊 Sheet mode enabled",
         reply_markup=main_keyboard
     )
+
+# =========================================
+# HELPERS
+# =========================================
+
+def extract_google_sheet_url(text):
+
+    urls = re.findall(
+        r'https:\/\/docs\.google\.com\/spreadsheets\/[^\s]+',
+        text
+    )
+
+    if urls:
+        return urls[0]
+
+    return None
 
 # =========================================
 # PHOTO HANDLER
@@ -157,11 +181,6 @@ async def handle_photo(message: types.Message):
 
         mode = user_modes.get(chat_id, "chat")
 
-        current_spreadsheet = active_spreadsheets.get(
-            chat_id,
-            spreadsheet
-        )
-
         photo = message.photo[-1]
 
         file = await bot.get_file(photo.file_id)
@@ -170,7 +189,9 @@ async def handle_photo(message: types.Message):
 
         image_bytes = downloaded.read()
 
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        base64_image = base64.b64encode(
+            image_bytes
+        ).decode("utf-8")
 
         # =====================================
         # CHAT MODE
@@ -199,8 +220,8 @@ IMPORTANT:
 - Remember previous messages
 - Continue conversations naturally
 - User is building THIS Telegram bot
-- Behave like normal ChatGPT
-- Speak Russian naturally
+- Behave like ChatGPT
+- Speak naturally in Russian
 """
                     }
                 ] + history + [
@@ -219,7 +240,8 @@ IMPORTANT:
                             }
                         ]
                     }
-                ]
+                ],
+                temperature=0.7
             )
 
             answer = response.choices[0].message.content
@@ -248,6 +270,11 @@ IMPORTANT:
 
         if mode == "sheet":
 
+            current_spreadsheet = active_spreadsheets.get(
+                chat_id,
+                default_spreadsheet
+            )
+
             response = client.chat.completions.create(
                 model="gpt-4.1",
                 temperature=0,
@@ -269,6 +296,8 @@ Return ONLY valid JSON.
 AVAILABLE ACTIONS:
 
 1. create_report
+
+FORMAT:
 
 {{
   "action": "create_report",
@@ -317,19 +346,21 @@ AVAILABLE ACTIONS:
             if data["action"] == "create_report":
 
                 report_sheet = current_spreadsheet.add_worksheet(
-                    title=data["sheet_title"],
+                    title=data["sheet_title"] + "_" + str(message.message_id),
                     rows="300",
                     cols="30"
                 )
 
-                report_sheet.append_row(data["headers"])
+                report_sheet.append_row(
+                    data["headers"]
+                )
 
                 for row in data["rows"]:
 
                     report_sheet.append_row(row)
 
                 await message.answer(
-                    f'Report "{data["sheet_title"]}" created'
+                    f'Report "{data["sheet_title"]}" created successfully'
                 )
 
                 return
@@ -356,19 +387,14 @@ async def chat(message: types.Message):
             return
 
         if text in [
-            "💬 Chat Mode",
-            "📊 Sheet Mode"
+            "💬 Chat",
+            "📊 Sheets"
         ]:
             return
 
         chat_id = message.chat.id
 
         mode = user_modes.get(chat_id, "chat")
-
-        current_spreadsheet = active_spreadsheets.get(
-            chat_id,
-            spreadsheet
-        )
 
         # =====================================
         # CHAT MODE
@@ -391,12 +417,13 @@ async def chat(message: types.Message):
                     {
                         "role": "system",
                         "content": """
-You are a persistent Telegram AI assistant.
+You are a persistent AI Telegram assistant.
 
 IMPORTANT:
 
 - Remember previous messages
 - Continue conversations naturally
+- Never lose context
 - User is building THIS Telegram bot
 - Behave like ChatGPT
 - Speak naturally in Russian
@@ -427,6 +454,31 @@ IMPORTANT:
 
         if mode == "sheet":
 
+            # =====================================
+            # AUTO CONNECT URL
+            # =====================================
+
+            sheet_url = extract_google_sheet_url(text)
+
+            if sheet_url:
+
+                opened_spreadsheet = gs_client.open_by_url(
+                    sheet_url
+                )
+
+                active_spreadsheets[chat_id] = opened_spreadsheet
+
+                await message.answer(
+                    f'Connected to:\n{opened_spreadsheet.title}'
+                )
+
+                return
+
+            current_spreadsheet = active_spreadsheets.get(
+                chat_id,
+                default_spreadsheet
+            )
+
             response = client.chat.completions.create(
                 model="gpt-4.1",
                 temperature=0,
@@ -434,38 +486,35 @@ IMPORTANT:
                     {
                         "role": "system",
                         "content": f"""
-You are a Google Sheets AI operator.
+You are a STRICT Google Sheets AI operator.
 
 IMPORTANT:
 
-You DO have access to Google Sheets.
+You REALLY have access to Google Sheets.
 
 Current spreadsheet:
 {current_spreadsheet.title}
 
-Return ONLY valid JSON.
-
 NEVER explain.
 NEVER chat.
-NEVER answer with text.
+NEVER teach.
+NEVER provide templates.
+NEVER provide links.
+
+You MUST execute actions.
+
+Return ONLY JSON.
 
 AVAILABLE ACTIONS:
 
-1. open_spreadsheet
-
-{{
-  "action": "open_spreadsheet",
-  "url": "https://docs.google.com/..."
-}}
-
-2. create_sheet
+1. create_sheet
 
 {{
   "action": "create_sheet",
   "title": "Buyers"
 }}
 
-3. write_cell
+2. write_cell
 
 {{
   "action": "write_cell",
@@ -473,7 +522,7 @@ AVAILABLE ACTIONS:
   "value": "hello"
 }}
 
-4. write_range
+3. write_range
 
 {{
   "action": "write_range",
@@ -484,23 +533,24 @@ AVAILABLE ACTIONS:
   ]
 }}
 
-5. build_dashboard
+4. build_dashboard
 
 {{
   "action": "build_dashboard",
-  "title": "Media Buyers Dashboard"
+  "title": "Dashboard"
 }}
 
-If user sends Google Sheets URL:
-use open_spreadsheet
-
-If user asks:
+If user says:
+- create dashboard
 - create table
-- build dashboard
+- build structure
 - add tabs
-- fill cells
+- create report
 
-you MUST return JSON command.
+you MUST return JSON action.
+
+DO NOT ANSWER LIKE CHATGPT.
+ONLY JSON.
 """
                     },
                     {
@@ -529,24 +579,6 @@ you MUST return JSON command.
                 return
 
             # =====================================
-            # OPEN SPREADSHEET
-            # =====================================
-
-            if action["action"] == "open_spreadsheet":
-
-                url = action["url"]
-
-                opened_spreadsheet = gs_client.open_by_url(url)
-
-                active_spreadsheets[chat_id] = opened_spreadsheet
-
-                await message.answer(
-                    f"Connected:\n{opened_spreadsheet.title}"
-                )
-
-                return
-
-            # =====================================
             # CREATE SHEET
             # =====================================
 
@@ -561,7 +593,7 @@ you MUST return JSON command.
                 )
 
                 await message.answer(
-                    f"Sheet created: {title}"
+                    f"Created sheet: {title}"
                 )
 
                 return
@@ -572,9 +604,9 @@ you MUST return JSON command.
 
             if action["action"] == "write_cell":
 
-                current_sheet = current_spreadsheet.sheet1
+                sheet1 = current_spreadsheet.sheet1
 
-                current_sheet.update(
+                sheet1.update(
                     action["cell"],
                     [[action["value"]]]
                 )
@@ -591,9 +623,9 @@ you MUST return JSON command.
 
             if action["action"] == "write_range":
 
-                current_sheet = current_spreadsheet.sheet1
+                sheet1 = current_spreadsheet.sheet1
 
-                current_sheet.update(
+                sheet1.update(
                     action["start_cell"],
                     action["values"]
                 )
