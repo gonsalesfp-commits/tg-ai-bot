@@ -1,10 +1,6 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import (
-    ReplyKeyboardMarkup,
-    KeyboardButton
-)
-
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from openai import OpenAI
 
 import asyncio
@@ -52,11 +48,9 @@ creds = Credentials.from_service_account_file(
 
 gs_client = gspread.authorize(creds)
 
-# DEFAULT SPREADSHEET
+spreadsheet = gs_client.open("TEST BOT")
 
-default_spreadsheet = gs_client.open("TEST BOT")
-
-main_sheet = default_spreadsheet.sheet1
+main_sheet = spreadsheet.sheet1
 
 # =========================================
 # MEMORY
@@ -68,7 +62,7 @@ chat_history = {}
 
 active_spreadsheets = {}
 
-MAX_HISTORY = 80
+MAX_HISTORY = 60
 
 # =========================================
 # KEYBOARD
@@ -77,12 +71,11 @@ MAX_HISTORY = 80
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="💬 Chat"),
-            KeyboardButton(text="📊 Sheets")
+            KeyboardButton(text="💬 Chat Mode"),
+            KeyboardButton(text="📊 Sheet Mode")
         ]
     ],
-    resize_keyboard=True,
-    input_field_placeholder="Choose mode"
+    resize_keyboard=True
 )
 
 # =========================================
@@ -92,7 +85,11 @@ main_keyboard = ReplyKeyboardMarkup(
 @dp.message(CommandStart())
 async def start(message: types.Message):
 
-    user_modes[message.chat.id] = "chat"
+    chat_id = message.chat.id
+
+    user_modes[chat_id] = "chat"
+
+    active_spreadsheets[chat_id] = spreadsheet
 
     await message.answer(
         "AI Operator Online",
@@ -100,7 +97,7 @@ async def start(message: types.Message):
     )
 
 # =========================================
-# COMMANDS
+# MODE COMMANDS
 # =========================================
 
 @dp.message(Command("chat"))
@@ -113,14 +110,13 @@ async def set_chat_mode(message: types.Message):
         reply_markup=main_keyboard
     )
 
-
 @dp.message(Command("sheet"))
 async def set_sheet_mode(message: types.Message):
 
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Sheet mode enabled",
+        "📊 Spreadsheet mode enabled",
         reply_markup=main_keyboard
     )
 
@@ -128,8 +124,8 @@ async def set_sheet_mode(message: types.Message):
 # BUTTONS
 # =========================================
 
-@dp.message(lambda message: message.text == "💬 Chat")
-async def button_chat_mode(message: types.Message):
+@dp.message(lambda message: message.text == "💬 Chat Mode")
+async def button_chat(message: types.Message):
 
     user_modes[message.chat.id] = "chat"
 
@@ -138,14 +134,13 @@ async def button_chat_mode(message: types.Message):
         reply_markup=main_keyboard
     )
 
-
-@dp.message(lambda message: message.text == "📊 Sheets")
-async def button_sheet_mode(message: types.Message):
+@dp.message(lambda message: message.text == "📊 Sheet Mode")
+async def button_sheet(message: types.Message):
 
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Sheet mode enabled",
+        "📊 Spreadsheet mode enabled",
         reply_markup=main_keyboard
     )
 
@@ -162,9 +157,10 @@ async def handle_photo(message: types.Message):
 
         mode = user_modes.get(chat_id, "chat")
 
-        # =====================================
-        # DOWNLOAD IMAGE
-        # =====================================
+        current_spreadsheet = active_spreadsheets.get(
+            chat_id,
+            spreadsheet
+        )
 
         photo = message.photo[-1]
 
@@ -174,9 +170,7 @@ async def handle_photo(message: types.Message):
 
         image_bytes = downloaded.read()
 
-        base64_image = base64.b64encode(
-            image_bytes
-        ).decode("utf-8")
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         # =====================================
         # CHAT MODE
@@ -205,9 +199,8 @@ IMPORTANT:
 - Remember previous messages
 - Continue conversations naturally
 - User is building THIS Telegram bot
-- Behave like real ChatGPT
-- Speak naturally in Russian
-- Never lose context
+- Behave like normal ChatGPT
+- Speak Russian naturally
 """
                     }
                 ] + history + [
@@ -226,8 +219,7 @@ IMPORTANT:
                             }
                         ]
                     }
-                ],
-                temperature=0.7
+                ]
             )
 
             answer = response.choices[0].message.content
@@ -258,13 +250,19 @@ IMPORTANT:
 
             response = client.chat.completions.create(
                 model="gpt-4.1",
+                temperature=0,
                 messages=[
                     {
                         "role": "system",
-                        "content": """
-You are an AI spreadsheet operator.
+                        "content": f"""
+You are a Google Sheets AI operator.
 
-Analyze screenshots and build Google Sheets.
+IMPORTANT:
+
+You DO have access to Google Sheets.
+
+Current spreadsheet:
+{current_spreadsheet.title}
 
 Return ONLY valid JSON.
 
@@ -272,9 +270,7 @@ AVAILABLE ACTIONS:
 
 1. create_report
 
-FORMAT:
-
-{
+{{
   "action": "create_report",
   "sheet_title": "Daily Report",
   "headers": [
@@ -285,7 +281,7 @@ FORMAT:
   "rows": [
     ["Buyer1", "100", "2"]
   ]
-}
+}}
 """
                     },
                     {
@@ -320,34 +316,23 @@ FORMAT:
 
             if data["action"] == "create_report":
 
-                current_spreadsheet = active_spreadsheets.get(
-                    chat_id,
-                    default_spreadsheet
-                )
-
                 report_sheet = current_spreadsheet.add_worksheet(
-                    title=data["sheet_title"] + "_" + str(message.message_id),
+                    title=data["sheet_title"],
                     rows="300",
                     cols="30"
                 )
 
-                report_sheet.append_row(
-                    data["headers"]
-                )
+                report_sheet.append_row(data["headers"])
 
                 for row in data["rows"]:
 
                     report_sheet.append_row(row)
 
                 await message.answer(
-                    f'Report "{data["sheet_title"]}" created successfully'
+                    f'Report "{data["sheet_title"]}" created'
                 )
 
                 return
-
-            await message.answer(str(data))
-
-            return
 
     except Exception as e:
 
@@ -367,22 +352,23 @@ async def chat(message: types.Message):
         if not text:
             return
 
-        # IGNORE COMMANDS
-
         if text.startswith("/"):
             return
 
-        # IGNORE BUTTONS
-
         if text in [
-            "💬 Chat",
-            "📊 Sheets"
+            "💬 Chat Mode",
+            "📊 Sheet Mode"
         ]:
             return
 
         chat_id = message.chat.id
 
         mode = user_modes.get(chat_id, "chat")
+
+        current_spreadsheet = active_spreadsheets.get(
+            chat_id,
+            spreadsheet
+        )
 
         # =====================================
         # CHAT MODE
@@ -405,16 +391,15 @@ async def chat(message: types.Message):
                     {
                         "role": "system",
                         "content": """
-You are a persistent AI Telegram assistant.
+You are a persistent Telegram AI assistant.
 
 IMPORTANT:
 
 - Remember previous messages
 - Continue conversations naturally
-- Never lose context
 - User is building THIS Telegram bot
-- Behave exactly like ChatGPT
-- Speak Russian naturally
+- Behave like ChatGPT
+- Speak naturally in Russian
 """
                     }
                 ] + history,
@@ -444,63 +429,78 @@ IMPORTANT:
 
             response = client.chat.completions.create(
                 model="gpt-4.1",
+                temperature=0,
                 messages=[
                     {
                         "role": "system",
-                        "content": """
-You are an AI spreadsheet assistant.
+                        "content": f"""
+You are a Google Sheets AI operator.
+
+IMPORTANT:
+
+You DO have access to Google Sheets.
+
+Current spreadsheet:
+{current_spreadsheet.title}
 
 Return ONLY valid JSON.
+
+NEVER explain.
+NEVER chat.
+NEVER answer with text.
 
 AVAILABLE ACTIONS:
 
 1. open_spreadsheet
 
-FORMAT:
-{
+{{
   "action": "open_spreadsheet",
   "url": "https://docs.google.com/..."
-}
+}}
 
 2. create_sheet
 
-FORMAT:
-{
+{{
   "action": "create_sheet",
   "title": "Buyers"
-}
+}}
 
 3. write_cell
 
-FORMAT:
-{
+{{
   "action": "write_cell",
   "cell": "A1",
   "value": "hello"
-}
+}}
 
 4. write_range
 
-FORMAT:
-{
+{{
   "action": "write_range",
   "start_cell": "A1",
   "values": [
     ["Name", "Spend"],
-    ["Buyer1", "100"]
+    ["John", "100"]
   ]
-}
+}}
 
-IMPORTANT:
+5. build_dashboard
 
-- If user sends Google Sheets URL:
+{{
+  "action": "build_dashboard",
+  "title": "Media Buyers Dashboard"
+}}
+
+If user sends Google Sheets URL:
 use open_spreadsheet
 
-- If user says:
-"in this document"
-"use this sheet"
-"here"
-then use current spreadsheet
+If user asks:
+- create table
+- build dashboard
+- add tabs
+- fill cells
+
+you MUST return JSON command.
 """
                     },
                     {
@@ -522,7 +522,9 @@ then use current spreadsheet
 
             except Exception:
 
-                await message.answer(answer)
+                await message.answer(
+                    f"JSON ERROR:\n{answer}"
+                )
 
                 return
 
@@ -539,7 +541,7 @@ then use current spreadsheet
                 active_spreadsheets[chat_id] = opened_spreadsheet
 
                 await message.answer(
-                    f"Spreadsheet connected:\n{opened_spreadsheet.title}"
+                    f"Connected:\n{opened_spreadsheet.title}"
                 )
 
                 return
@@ -552,19 +554,14 @@ then use current spreadsheet
 
                 title = action["title"]
 
-                current_spreadsheet = active_spreadsheets.get(
-                    chat_id,
-                    default_spreadsheet
-                )
-
                 current_spreadsheet.add_worksheet(
-                    title=title + "_" + str(message.message_id),
-                    rows="100",
-                    cols="20"
+                    title=title,
+                    rows="200",
+                    cols="30"
                 )
 
                 await message.answer(
-                    f"Created sheet: {title}"
+                    f"Sheet created: {title}"
                 )
 
                 return
@@ -575,21 +572,15 @@ then use current spreadsheet
 
             if action["action"] == "write_cell":
 
-                cell = action["cell"]
+                current_sheet = current_spreadsheet.sheet1
 
-                value = action["value"]
-
-                current_spreadsheet = active_spreadsheets.get(
-                    chat_id,
-                    default_spreadsheet
+                current_sheet.update(
+                    action["cell"],
+                    [[action["value"]]]
                 )
 
-                sheet1 = current_spreadsheet.sheet1
-
-                sheet1.update(cell, [[value]])
-
                 await message.answer(
-                    f"Wrote {value} to {cell}"
+                    f'Updated {action["cell"]}'
                 )
 
                 return
@@ -600,21 +591,44 @@ then use current spreadsheet
 
             if action["action"] == "write_range":
 
-                start_cell = action["start_cell"]
+                current_sheet = current_spreadsheet.sheet1
 
-                values = action["values"]
-
-                current_spreadsheet = active_spreadsheets.get(
-                    chat_id,
-                    default_spreadsheet
+                current_sheet.update(
+                    action["start_cell"],
+                    action["values"]
                 )
 
-                sheet1 = current_spreadsheet.sheet1
+                await message.answer(
+                    "Range updated"
+                )
 
-                sheet1.update(start_cell, values)
+                return
+
+            # =====================================
+            # BUILD DASHBOARD
+            # =====================================
+
+            if action["action"] == "build_dashboard":
+
+                dashboard = current_spreadsheet.add_worksheet(
+                    title=action["title"],
+                    rows="100",
+                    cols="30"
+                )
+
+                headers = [[
+                    "Buyer",
+                    "Spend",
+                    "Deps",
+                    "Revenue",
+                    "Profit",
+                    "ROI"
+                ]]
+
+                dashboard.update("A1:F1", headers)
 
                 await message.answer(
-                    f"Range written from {start_cell}"
+                    f'Dashboard "{action["title"]}" created'
                 )
 
                 return
