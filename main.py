@@ -1,6 +1,10 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
+
 from openai import OpenAI
 
 import asyncio
@@ -60,7 +64,7 @@ user_modes = {}
 
 chat_history = {}
 
-MAX_HISTORY = 60
+MAX_HISTORY = 80
 
 # =========================================
 # KEYBOARD
@@ -69,11 +73,12 @@ MAX_HISTORY = 60
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [
-            KeyboardButton(text="💬 Chat Mode"),
-            KeyboardButton(text="📊 Sheet Mode")
+            KeyboardButton(text="💬 Chat"),
+            KeyboardButton(text="📊 Sheets")
         ]
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
+    input_field_placeholder="Choose mode"
 )
 
 # =========================================
@@ -91,7 +96,7 @@ async def start(message: types.Message):
     )
 
 # =========================================
-# MODE COMMANDS
+# COMMANDS
 # =========================================
 
 @dp.message(Command("chat"))
@@ -111,15 +116,15 @@ async def set_sheet_mode(message: types.Message):
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Spreadsheet mode enabled",
+        "📊 Sheet mode enabled",
         reply_markup=main_keyboard
     )
 
 # =========================================
-# BUTTON HANDLERS
+# BUTTONS
 # =========================================
 
-@dp.message(lambda message: message.text == "💬 Chat Mode")
+@dp.message(lambda message: message.text == "💬 Chat")
 async def button_chat_mode(message: types.Message):
 
     user_modes[message.chat.id] = "chat"
@@ -130,13 +135,13 @@ async def button_chat_mode(message: types.Message):
     )
 
 
-@dp.message(lambda message: message.text == "📊 Sheet Mode")
+@dp.message(lambda message: message.text == "📊 Sheets")
 async def button_sheet_mode(message: types.Message):
 
     user_modes[message.chat.id] = "sheet"
 
     await message.answer(
-        "📊 Spreadsheet mode enabled",
+        "📊 Sheet mode enabled",
         reply_markup=main_keyboard
     )
 
@@ -165,10 +170,12 @@ async def handle_photo(message: types.Message):
 
         image_bytes = downloaded.read()
 
-        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        base64_image = base64.b64encode(
+            image_bytes
+        ).decode("utf-8")
 
         # =====================================
-        # CHAT MODE WITH IMAGE
+        # CHAT MODE
         # =====================================
 
         if mode == "chat":
@@ -194,16 +201,17 @@ IMPORTANT:
 - Remember previous messages
 - Continue conversations naturally
 - User is building THIS Telegram bot with you
-- If user says:
+- Behave like real ChatGPT
+- Speak naturally in Russian
+- Never forget conversation context
+- Understand references like:
   "this bot"
   "here"
   "our project"
   "buttons"
-  "sheets"
-  they mean THIS Telegram bot project
+  "google sheets"
 
-- Behave like ChatGPT
-- Speak Russian naturally
+You are INSIDE the project user is building.
 """
                     }
                 ] + history + [
@@ -247,7 +255,7 @@ IMPORTANT:
             return
 
         # =====================================
-        # SHEET MODE WITH IMAGE
+        # SHEET MODE
         # =====================================
 
         if mode == "sheet":
@@ -260,7 +268,7 @@ IMPORTANT:
                         "content": """
 You are an AI spreadsheet operator.
 
-Analyze screenshots and create Google Sheets structure.
+Analyze screenshots and build Google Sheets.
 
 Return ONLY valid JSON.
 
@@ -326,11 +334,9 @@ FORMAT:
                     cols="30"
                 )
 
-                # HEADERS
-
-                report_sheet.append_row(data["headers"])
-
-                # ROWS
+                report_sheet.append_row(
+                    data["headers"]
+                )
 
                 for row in data["rows"]:
 
@@ -369,11 +375,11 @@ async def chat(message: types.Message):
         if text.startswith("/"):
             return
 
-        # IGNORE BUTTONS
+        # IGNORE BUTTON TEXTS
 
         if text in [
-            "💬 Chat Mode",
-            "📊 Sheet Mode"
+            "💬 Chat",
+            "📊 Sheets"
         ]:
             return
 
@@ -402,24 +408,25 @@ async def chat(message: types.Message):
                     {
                         "role": "system",
                         "content": """
-You are a persistent Telegram AI assistant.
+You are a persistent AI Telegram assistant.
 
 IMPORTANT:
 
-- Remember previous messages
+- Remember conversation context
+- Never behave like stateless AI
 - Continue conversations naturally
-- Never lose conversation context
-- User is building THIS Telegram bot with you
-
+- User is building THIS Telegram bot
 - Understand references:
   "this bot"
+  "buttons"
   "here"
   "our table"
-  "make modes"
-  "add buttons"
+  "our sheets"
+  "google docs"
 
-- Behave like ChatGPT
-- Speak naturally in Russian
+Behave exactly like ChatGPT with memory.
+
+Speak Russian naturally.
 """
                     }
                 ] + history,
