@@ -49,10 +49,14 @@ spreadsheet = gs_client.open("TEST BOT")
 main_sheet = spreadsheet.sheet1
 
 # =========================
-# USER MODES
+# USER STATE
 # =========================
 
 user_modes = {}
+
+chat_history = {}
+
+MAX_HISTORY = 20
 
 # =========================
 # START
@@ -62,7 +66,7 @@ user_modes = {}
 async def start(message: types.Message):
 
     await message.answer(
-        "Bot online\n\n"
+        "AI Operator Online\n\n"
         "/chat - normal AI mode\n"
         "/sheet - spreadsheet mode"
     )
@@ -114,12 +118,6 @@ async def handle_photo(message: types.Message):
 You are an AI spreadsheet operator.
 
 Analyze screenshots with reports/statistics.
-
-If the user asks to recreate dashboard/table layout:
-- create spreadsheet structure
-- create headers
-- create rows
-- preserve layout logic
 
 Return ONLY valid JSON.
 
@@ -220,7 +218,9 @@ async def chat(message: types.Message):
         if text.startswith("/"):
             return
 
-        mode = user_modes.get(message.chat.id, "chat")
+        chat_id = message.chat.id
+
+        mode = user_modes.get(chat_id, "chat")
 
         # =========================
         # CHAT MODE
@@ -228,27 +228,47 @@ async def chat(message: types.Message):
 
         if mode == "chat":
 
+            history = chat_history.get(chat_id, [])
+
+            # SAVE USER MESSAGE
+
+            history.append({
+                "role": "user",
+                "content": text
+            })
+
+            # LIMIT MEMORY
+
+            history = history[-MAX_HISTORY:]
+
             response = client.chat.completions.create(
                 model="gpt-4.1-mini",
                 messages=[
                     {
                         "role": "system",
                         "content": """
-You are a helpful AI assistant.
+You are a smart AI assistant inside Telegram.
 
-Speak normally.
+You remember previous messages in the conversation.
 
-Do not return JSON unless user asks.
+Speak naturally.
+
+Be helpful and conversational.
 """
-                    },
-                    {
-                        "role": "user",
-                        "content": text
                     }
-                ]
+                ] + history
             )
 
             answer = response.choices[0].message.content
+
+            # SAVE ASSISTANT MESSAGE
+
+            history.append({
+                "role": "assistant",
+                "content": answer
+            })
+
+            chat_history[chat_id] = history
 
             await message.answer(answer)
 
