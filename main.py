@@ -8,29 +8,29 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
-# =========================
+# =========================================
 # TOKENS
-# =========================
+# =========================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# =========================
+# =========================================
 # TELEGRAM
-# =========================
+# =========================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# =========================
+# =========================================
 # OPENAI
-# =========================
+# =========================================
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# =========================
+# =========================================
 # GOOGLE SHEETS
-# =========================
+# =========================================
 
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -48,32 +48,35 @@ spreadsheet = gs_client.open("TEST BOT")
 
 main_sheet = spreadsheet.sheet1
 
-# =========================
-# USER STATE
-# =========================
+# =========================================
+# MEMORY
+# =========================================
 
 user_modes = {}
 
 chat_history = {}
 
-MAX_HISTORY = 20
+MAX_HISTORY = 30
 
-# =========================
+# =========================================
 # START
-# =========================
+# =========================================
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
 
+    user_modes[message.chat.id] = "chat"
+
     await message.answer(
         "AI Operator Online\n\n"
+        "Commands:\n"
         "/chat - normal AI mode\n"
         "/sheet - spreadsheet mode"
     )
 
-# =========================
-# MODE COMMANDS
-# =========================
+# =========================================
+# MODE SWITCH
+# =========================================
 
 @dp.message(Command("chat"))
 async def set_chat_mode(message: types.Message):
@@ -88,16 +91,24 @@ async def set_sheet_mode(message: types.Message):
 
     user_modes[message.chat.id] = "sheet"
 
-    await message.answer("Sheet mode enabled")
+    await message.answer("Spreadsheet mode enabled")
 
-# =========================
+# =========================================
 # PHOTO HANDLER
-# =========================
+# =========================================
 
 @dp.message(lambda m: m.photo)
 async def handle_photo(message: types.Message):
 
     try:
+
+        chat_id = message.chat.id
+
+        mode = user_modes.get(chat_id, "chat")
+
+        # =====================================
+        # DOWNLOAD IMAGE
+        # =====================================
 
         photo = message.photo[-1]
 
@@ -109,17 +120,95 @@ async def handle_photo(message: types.Message):
 
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
+        # =====================================
+        # CHAT MODE WITH IMAGE
+        # =====================================
+
+        if mode == "chat":
+
+            history = chat_history.get(chat_id, [])
+
+            user_text = message.caption if message.caption else "Analyze image"
+
+            response = client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """
+You are a smart persistent AI assistant inside Telegram.
+
+IMPORTANT:
+
+- Remember previous messages
+- Continue conversations naturally
+- Understand references to previous messages
+- User is building THIS Telegram bot with you
+- If user says "this bot" or "here" — they mean THIS project
+- Behave like normal ChatGPT
+- Speak Russian naturally
+"""
+                    }
+                ] + history + [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": user_text
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            answer = response.choices[0].message.content
+
+            history.append({
+                "role": "user",
+                "content": user_text
+            })
+
+            history.append({
+                "role": "assistant",
+                "content": answer
+            })
+
+            history = history[-MAX_HISTORY:]
+
+            chat_history[chat_id] = history
+
+            await message.answer(answer)
+
+            return
+
+        # =====================================
+        # SHEET MODE WITH IMAGE
+        # =====================================
+
+        if mode == "sheet":
+
+            response = client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """
 You are an AI spreadsheet operator.
 
-Analyze screenshots with reports/statistics.
+Analyze screenshots and create Google Sheets structure.
 
 Return ONLY valid JSON.
+
+AVAILABLE ACTIONS:
+
+1. create_report
 
 FORMAT:
 
@@ -129,82 +218,79 @@ FORMAT:
   "headers": [
     "Buyer",
     "Spend",
-    "Deps",
-    "Revenue",
-    "Profit",
-    "ROI"
+    "Deps"
   ],
   "rows": [
-    ["Buyer1", "100", "2", "150", "50", "50%"]
+    ["Buyer1", "100", "2"]
   ]
 }
 """
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": message.caption if message.caption else "Analyze screenshot"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": message.caption if message.caption else "Analyze screenshot"
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ]
-        )
-
-        answer = response.choices[0].message.content
-
-        # CLEAN JSON
-
-        answer = answer.replace("```json", "")
-        answer = answer.replace("```", "")
-        answer = answer.strip()
-
-        data = json.loads(answer)
-
-        # =========================
-        # CREATE REPORT
-        # =========================
-
-        if data["action"] == "create_report":
-
-            report_sheet = spreadsheet.add_worksheet(
-                title=data["sheet_title"] + "_" + str(message.message_id),
-                rows="300",
-                cols="20"
+                        ]
+                    }
+                ]
             )
 
-            # HEADERS
+            answer = response.choices[0].message.content
 
-            report_sheet.append_row(data["headers"])
+            answer = answer.replace("```json", "")
+            answer = answer.replace("```", "")
+            answer = answer.strip()
 
-            # ROWS
+            data = json.loads(answer)
 
-            for row in data["rows"]:
+            # =====================================
+            # CREATE REPORT
+            # =====================================
 
-                report_sheet.append_row(row)
+            if data["action"] == "create_report":
 
-            await message.answer(
-                f'Report "{data["sheet_title"]}" created successfully'
-            )
+                report_sheet = spreadsheet.add_worksheet(
+                    title=data["sheet_title"] + "_" + str(message.message_id),
+                    rows="300",
+                    cols="30"
+                )
+
+                # HEADERS
+
+                report_sheet.append_row(data["headers"])
+
+                # ROWS
+
+                for row in data["rows"]:
+
+                    report_sheet.append_row(row)
+
+                await message.answer(
+                    f'Report "{data["sheet_title"]}" created successfully'
+                )
+
+                return
+
+            await message.answer(str(data))
 
             return
 
-        await message.answer(str(data))
-
     except Exception as e:
 
-        await message.answer(f"PHOTO ERROR: {e}")
+        await message.answer(f"PHOTO ERROR:\n{e}")
 
-# =========================
+# =========================================
 # TEXT HANDLER
-# =========================
+# =========================================
 
 @dp.message()
 async def chat(message: types.Message):
@@ -212,6 +298,9 @@ async def chat(message: types.Message):
     try:
 
         text = message.text
+
+        if not text:
+            return
 
         # IGNORE COMMANDS
 
@@ -222,51 +311,62 @@ async def chat(message: types.Message):
 
         mode = user_modes.get(chat_id, "chat")
 
-        # =========================
+        # =====================================
         # CHAT MODE
-        # =========================
+        # =====================================
 
         if mode == "chat":
 
             history = chat_history.get(chat_id, [])
-
-            # SAVE USER MESSAGE
 
             history.append({
                 "role": "user",
                 "content": text
             })
 
-            # LIMIT MEMORY
-
             history = history[-MAX_HISTORY:]
 
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
                         "content": """
-You are a smart AI assistant inside Telegram.
+You are a persistent Telegram AI assistant.
 
-You remember previous messages in the conversation.
+IMPORTANT:
 
-Speak naturally.
+- Remember previous messages
+- Continue conversations naturally
+- Never lose conversation context
+- User is building THIS Telegram bot with you
+- If user asks:
+"how to add buttons here?"
+they mean THIS Telegram bot
 
-Be helpful and conversational.
+- Understand references like:
+"this bot"
+"here"
+"our table"
+"make modes"
+"add buttons"
+
+- Behave like ChatGPT memory conversation
+- Speak naturally in Russian
 """
                     }
-                ] + history
+                ] + history,
+                temperature=0.7
             )
 
             answer = response.choices[0].message.content
-
-            # SAVE ASSISTANT MESSAGE
 
             history.append({
                 "role": "assistant",
                 "content": answer
             })
+
+            history = history[-MAX_HISTORY:]
 
             chat_history[chat_id] = history
 
@@ -274,14 +374,14 @@ Be helpful and conversational.
 
             return
 
-        # =========================
+        # =====================================
         # SHEET MODE
-        # =========================
+        # =====================================
 
         if mode == "sheet":
 
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
@@ -319,8 +419,6 @@ FORMAT:
 
             answer = response.choices[0].message.content
 
-            # CLEAN JSON
-
             answer = answer.replace("```json", "")
             answer = answer.replace("```", "")
             answer = answer.strip()
@@ -335,9 +433,9 @@ FORMAT:
 
                 return
 
-            # =========================
+            # =====================================
             # CREATE SHEET
-            # =========================
+            # =====================================
 
             if action["action"] == "create_sheet":
 
@@ -355,9 +453,9 @@ FORMAT:
 
                 return
 
-            # =========================
+            # =====================================
             # WRITE CELL
-            # =========================
+            # =====================================
 
             if action["action"] == "write_cell":
 
@@ -379,11 +477,11 @@ FORMAT:
 
     except Exception as e:
 
-        await message.answer(f"TEXT ERROR: {e}")
+        await message.answer(f"TEXT ERROR:\n{e}")
 
-# =========================
+# =========================================
 # MAIN
-# =========================
+# =========================================
 
 async def main():
 
