@@ -1,5 +1,5 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from openai import OpenAI
 import asyncio
 import os
@@ -8,21 +8,29 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
+# =========================
 # TOKENS
+# =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# =========================
 # TELEGRAM
+# =========================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# =========================
 # OPENAI
+# =========================
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# =========================
 # GOOGLE SHEETS
+# =========================
 
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -40,23 +48,52 @@ spreadsheet = gs_client.open("TEST BOT")
 
 main_sheet = spreadsheet.sheet1
 
+# =========================
+# USER MODES
+# =========================
 
+user_modes = {}
+
+# =========================
 # START
+# =========================
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
 
-    await message.answer("AI Spreadsheet Operator Online")
+    await message.answer(
+        "Bot online\n\n"
+        "/chat - normal AI mode\n"
+        "/sheet - spreadsheet mode"
+    )
+
+# =========================
+# MODE COMMANDS
+# =========================
+
+@dp.message(Command("chat"))
+async def set_chat_mode(message: types.Message):
+
+    user_modes[message.chat.id] = "chat"
+
+    await message.answer("Chat mode enabled")
 
 
+@dp.message(Command("sheet"))
+async def set_sheet_mode(message: types.Message):
+
+    user_modes[message.chat.id] = "sheet"
+
+    await message.answer("Sheet mode enabled")
+
+# =========================
 # PHOTO HANDLER
+# =========================
 
 @dp.message(lambda m: m.photo)
 async def handle_photo(message: types.Message):
 
     try:
-
-        # GET PHOTO
 
         photo = message.photo[-1]
 
@@ -68,8 +105,6 @@ async def handle_photo(message: types.Message):
 
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        # GPT VISION
-
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
@@ -80,11 +115,13 @@ You are an AI spreadsheet operator.
 
 Analyze screenshots with reports/statistics.
 
-Your task:
+If the user asks to recreate dashboard/table layout:
+- create spreadsheet structure
+- create headers
+- create rows
+- preserve layout logic
 
-1. Extract report data
-2. Build spreadsheet structure
-3. Return ONLY valid JSON
+Return ONLY valid JSON.
 
 FORMAT:
 
@@ -110,7 +147,7 @@ FORMAT:
                     "content": [
                         {
                             "type": "text",
-                            "text": "Analyze this screenshot and create report table JSON."
+                            "text": message.caption if message.caption else "Analyze screenshot"
                         },
                         {
                             "type": "image_url",
@@ -131,15 +168,13 @@ FORMAT:
         answer = answer.replace("```", "")
         answer = answer.strip()
 
-        # PARSE JSON
-
         data = json.loads(answer)
 
-        # EXECUTOR
+        # =========================
+        # CREATE REPORT
+        # =========================
 
         if data["action"] == "create_report":
-
-            # CREATE NEW SHEET
 
             report_sheet = spreadsheet.add_worksheet(
                 title=data["sheet_title"] + "_" + str(message.message_id),
@@ -147,11 +182,11 @@ FORMAT:
                 cols="20"
             )
 
-            # ADD HEADERS
+            # HEADERS
 
             report_sheet.append_row(data["headers"])
 
-            # ADD ROWS
+            # ROWS
 
             for row in data["rows"]:
 
@@ -169,33 +204,9 @@ FORMAT:
 
         await message.answer(f"PHOTO ERROR: {e}")
 
-
+# =========================
 # TEXT HANDLER
-
-# USER MODES
-
-user_modes = {}
-
-
-# MODE COMMANDS
-
-@dp.message(lambda m: m.text == "/chat")
-async def set_chat_mode(message: types.Message):
-
-    user_modes[message.chat.id] = "chat"
-
-    await message.answer("Chat mode enabled")
-
-
-@dp.message(lambda m: m.text == "/sheet")
-async def set_sheet_mode(message: types.Message):
-
-    user_modes[message.chat.id] = "sheet"
-
-    await message.answer("Sheet mode enabled")
-
-
-# TEXT HANDLER
+# =========================
 
 @dp.message()
 async def chat(message: types.Message):
@@ -203,6 +214,11 @@ async def chat(message: types.Message):
     try:
 
         text = message.text
+
+        # IGNORE COMMANDS
+
+        if text.startswith("/"):
+            return
 
         mode = user_modes.get(message.chat.id, "chat")
 
@@ -299,7 +315,9 @@ FORMAT:
 
                 return
 
+            # =========================
             # CREATE SHEET
+            # =========================
 
             if action["action"] == "create_sheet":
 
@@ -317,7 +335,9 @@ FORMAT:
 
                 return
 
+            # =========================
             # WRITE CELL
+            # =========================
 
             if action["action"] == "write_cell":
 
@@ -341,13 +361,13 @@ FORMAT:
 
         await message.answer(f"TEXT ERROR: {e}")
 
-
+# =========================
 # MAIN
+# =========================
 
 async def main():
 
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
 
