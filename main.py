@@ -125,17 +125,15 @@ FORMAT:
 
         answer = response.choices[0].message.content
 
-# CLEAN JSON
+        # CLEAN JSON
 
-answer = answer.replace("```json", "")
+        answer = answer.replace("```json", "")
+        answer = answer.replace("```", "")
+        answer = answer.strip()
 
-answer = answer.replace("```", "")
+        # PARSE JSON
 
-answer = answer.strip()
-
-# PARSE JSON
-
-data = json.loads(answer)
+        data = json.loads(answer)
 
         # EXECUTOR
 
@@ -144,7 +142,7 @@ data = json.loads(answer)
             # CREATE NEW SHEET
 
             report_sheet = spreadsheet.add_worksheet(
-                title=data["sheet_title"],
+                title=data["sheet_title"] + "_" + str(message.message_id),
                 rows="300",
                 cols="20"
             )
@@ -222,6 +220,12 @@ FORMAT:
 
         answer = response.choices[0].message.content
 
+        # CLEAN JSON
+
+        answer = answer.replace("```json", "")
+        answer = answer.replace("```", "")
+        answer = answer.strip()
+
         # PARSE JSON
 
         try:
@@ -240,7 +244,7 @@ FORMAT:
             title = action["title"]
 
             spreadsheet.add_worksheet(
-                title=title,
+                title=title + "_" + str(message.message_id),
                 rows="100",
                 cols="20"
             )
