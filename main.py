@@ -52,9 +52,11 @@ creds = Credentials.from_service_account_file(
 
 gs_client = gspread.authorize(creds)
 
-spreadsheet = gs_client.open("TEST BOT")
+# DEFAULT SPREADSHEET
 
-main_sheet = spreadsheet.sheet1
+default_spreadsheet = gs_client.open("TEST BOT")
+
+main_sheet = default_spreadsheet.sheet1
 
 # =========================================
 # MEMORY
@@ -63,6 +65,8 @@ main_sheet = spreadsheet.sheet1
 user_modes = {}
 
 chat_history = {}
+
+active_spreadsheets = {}
 
 MAX_HISTORY = 80
 
@@ -200,18 +204,10 @@ IMPORTANT:
 
 - Remember previous messages
 - Continue conversations naturally
-- User is building THIS Telegram bot with you
+- User is building THIS Telegram bot
 - Behave like real ChatGPT
 - Speak naturally in Russian
-- Never forget conversation context
-- Understand references like:
-  "this bot"
-  "here"
-  "our project"
-  "buttons"
-  "google sheets"
-
-You are INSIDE the project user is building.
+- Never lose context
 """
                     }
                 ] + history + [
@@ -322,13 +318,14 @@ FORMAT:
 
             data = json.loads(answer)
 
-            # =====================================
-            # CREATE REPORT
-            # =====================================
-
             if data["action"] == "create_report":
 
-                report_sheet = spreadsheet.add_worksheet(
+                current_spreadsheet = active_spreadsheets.get(
+                    chat_id,
+                    default_spreadsheet
+                )
+
+                report_sheet = current_spreadsheet.add_worksheet(
                     title=data["sheet_title"] + "_" + str(message.message_id),
                     rows="300",
                     cols="30"
@@ -375,7 +372,7 @@ async def chat(message: types.Message):
         if text.startswith("/"):
             return
 
-        # IGNORE BUTTON TEXTS
+        # IGNORE BUTTONS
 
         if text in [
             "💬 Chat",
@@ -412,21 +409,12 @@ You are a persistent AI Telegram assistant.
 
 IMPORTANT:
 
-- Remember conversation context
-- Never behave like stateless AI
+- Remember previous messages
 - Continue conversations naturally
+- Never lose context
 - User is building THIS Telegram bot
-- Understand references:
-  "this bot"
-  "buttons"
-  "here"
-  "our table"
-  "our sheets"
-  "google docs"
-
-Behave exactly like ChatGPT with memory.
-
-Speak Russian naturally.
+- Behave exactly like ChatGPT
+- Speak Russian naturally
 """
                     }
                 ] + history,
@@ -466,7 +454,15 @@ Return ONLY valid JSON.
 
 AVAILABLE ACTIONS:
 
-1. create_sheet
+1. open_spreadsheet
+
+FORMAT:
+{
+  "action": "open_spreadsheet",
+  "url": "https://docs.google.com/..."
+}
+
+2. create_sheet
 
 FORMAT:
 {
@@ -474,7 +470,7 @@ FORMAT:
   "title": "Buyers"
 }
 
-2. write_cell
+3. write_cell
 
 FORMAT:
 {
@@ -482,6 +478,29 @@ FORMAT:
   "cell": "A1",
   "value": "hello"
 }
+
+4. write_range
+
+FORMAT:
+{
+  "action": "write_range",
+  "start_cell": "A1",
+  "values": [
+    ["Name", "Spend"],
+    ["Buyer1", "100"]
+  ]
+}
+
+IMPORTANT:
+
+- If user sends Google Sheets URL:
+use open_spreadsheet
+
+- If user says:
+"in this document"
+"use this sheet"
+"here"
+then use current spreadsheet
 """
                     },
                     {
@@ -508,6 +527,24 @@ FORMAT:
                 return
 
             # =====================================
+            # OPEN SPREADSHEET
+            # =====================================
+
+            if action["action"] == "open_spreadsheet":
+
+                url = action["url"]
+
+                opened_spreadsheet = gs_client.open_by_url(url)
+
+                active_spreadsheets[chat_id] = opened_spreadsheet
+
+                await message.answer(
+                    f"Spreadsheet connected:\n{opened_spreadsheet.title}"
+                )
+
+                return
+
+            # =====================================
             # CREATE SHEET
             # =====================================
 
@@ -515,7 +552,12 @@ FORMAT:
 
                 title = action["title"]
 
-                spreadsheet.add_worksheet(
+                current_spreadsheet = active_spreadsheets.get(
+                    chat_id,
+                    default_spreadsheet
+                )
+
+                current_spreadsheet.add_worksheet(
                     title=title + "_" + str(message.message_id),
                     rows="100",
                     cols="20"
@@ -537,10 +579,42 @@ FORMAT:
 
                 value = action["value"]
 
-                main_sheet.update(cell, [[value]])
+                current_spreadsheet = active_spreadsheets.get(
+                    chat_id,
+                    default_spreadsheet
+                )
+
+                sheet1 = current_spreadsheet.sheet1
+
+                sheet1.update(cell, [[value]])
 
                 await message.answer(
                     f"Wrote {value} to {cell}"
+                )
+
+                return
+
+            # =====================================
+            # WRITE RANGE
+            # =====================================
+
+            if action["action"] == "write_range":
+
+                start_cell = action["start_cell"]
+
+                values = action["values"]
+
+                current_spreadsheet = active_spreadsheets.get(
+                    chat_id,
+                    default_spreadsheet
+                )
+
+                sheet1 = current_spreadsheet.sheet1
+
+                sheet1.update(start_cell, values)
+
+                await message.answer(
+                    f"Range written from {start_cell}"
                 )
 
                 return
