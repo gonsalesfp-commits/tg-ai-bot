@@ -125,9 +125,17 @@ FORMAT:
 
         answer = response.choices[0].message.content
 
-        # PARSE JSON
+# CLEAN JSON
 
-        data = json.loads(answer)
+answer = answer.replace("```json", "")
+
+answer = answer.replace("```", "")
+
+answer = answer.strip()
+
+# PARSE JSON
+
+data = json.loads(answer)
 
         # EXECUTOR
 
