@@ -21,7 +21,7 @@ scopes = [
 ]
 
 creds = Credentials.from_service_account_file(
-    "/etc/secrets/credentials.json",
+    "/etc/secrets/just-sunrise-501012-t4-829cee1f1963.json",
     scopes=scopes
 )
 
