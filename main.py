@@ -40,25 +40,35 @@ async def chat(message: types.Message):
 
     text = message.text
 
-    # запись в таблицу
-    if text.startswith("/write"):
-
-        value = text.replace("/write ", "")
-
-        sheet.update("A1", [[value]])
-
-        await message.answer(f"Wrote to sheet: {value}")
-
-        return
-
-    # GPT chat
+    # GPT planner
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
             {
                 "role": "system",
-                "content": "You are a useful AI assistant."
+                "content": """
+You are an AI spreadsheet assistant.
+
+You must return ONLY JSON.
+
+Available actions:
+
+1. create_sheet
+Example:
+{
+  "action": "create_sheet",
+  "title": "Buyers"
+}
+
+2. write_cell
+Example:
+{
+  "action": "write_cell",
+  "cell": "A1",
+  "value": "hello"
+}
+"""
             },
             {
                 "role": "user",
@@ -69,8 +79,47 @@ async def chat(message: types.Message):
 
     answer = response.choices[0].message.content
 
-    await message.answer(answer)
+    # PARSE JSON
 
+    import json
+
+    try:
+
+        action = json.loads(answer)
+
+    except Exception as e:
+
+        await message.answer(f"JSON ERROR: {e}")
+        return
+
+    # EXECUTOR
+
+    if action["action"] == "create_sheet":
+
+        title = action["title"]
+
+        sheet.spreadsheet.add_worksheet(
+            title=title,
+            rows="100",
+            cols="20"
+        )
+
+        await message.answer(f"Created sheet: {title}")
+
+        return
+
+    if action["action"] == "write_cell":
+
+        cell = action["cell"]
+        value = action["value"]
+
+        sheet.update(cell, [[value]])
+
+        await message.answer(f"Wrote {value} to {cell}")
+
+        return
+
+    await message.answer(str(action))
 async def main():
     await dp.start_polling(bot)
 
