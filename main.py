@@ -3,6 +3,7 @@ from aiogram.filters import CommandStart
 from openai import OpenAI
 import asyncio
 import os
+import base64
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -120,6 +121,52 @@ Example:
         return
 
     await message.answer(str(action))
+    @dp.message(lambda message: message.photo)
+async def handle_photo(message: types.Message):
+
+    # biggest photo
+    photo = message.photo[-1]
+
+    file_info = await bot.get_file(photo.file_id)
+
+    file_path = file_info.file_path
+
+    downloaded_file = await bot.download_file(file_path)
+
+    image_bytes = downloaded_file.read()
+
+    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": """
+Read this screenshot.
+
+Extract all useful report/statistics data.
+
+Return ONLY JSON.
+"""
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    answer = response.choices[0].message.content
+
+    await message.answer(answer)
 async def main():
     await dp.start_polling(bot)
 
