@@ -172,6 +172,31 @@ FORMAT:
 
 # TEXT HANDLER
 
+# USER MODES
+
+user_modes = {}
+
+
+# MODE COMMANDS
+
+@dp.message(lambda m: m.text == "/chat")
+async def set_chat_mode(message: types.Message):
+
+    user_modes[message.chat.id] = "chat"
+
+    await message.answer("Chat mode enabled")
+
+
+@dp.message(lambda m: m.text == "/sheet")
+async def set_sheet_mode(message: types.Message):
+
+    user_modes[message.chat.id] = "sheet"
+
+    await message.answer("Sheet mode enabled")
+
+
+# TEXT HANDLER
+
 @dp.message()
 async def chat(message: types.Message):
 
@@ -179,14 +204,52 @@ async def chat(message: types.Message):
 
         text = message.text
 
-        # GPT PLANNER
+        mode = user_modes.get(message.chat.id, "chat")
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
+        # =========================
+        # CHAT MODE
+        # =========================
+
+        if mode == "chat":
+
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """
+You are a helpful AI assistant.
+
+Speak normally.
+
+Do not return JSON unless user asks.
+"""
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ]
+            )
+
+            answer = response.choices[0].message.content
+
+            await message.answer(answer)
+
+            return
+
+        # =========================
+        # SHEET MODE
+        # =========================
+
+        if mode == "sheet":
+
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """
 You are an AI spreadsheet assistant.
 
 Return ONLY valid JSON.
@@ -210,68 +273,69 @@ FORMAT:
   "value": "hello"
 }
 """
-                },
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ]
-        )
-
-        answer = response.choices[0].message.content
-
-        # CLEAN JSON
-
-        answer = answer.replace("```json", "")
-        answer = answer.replace("```", "")
-        answer = answer.strip()
-
-        # PARSE JSON
-
-        try:
-
-            action = json.loads(answer)
-
-        except Exception:
-
-            await message.answer(answer)
-            return
-
-        # CREATE SHEET
-
-        if action["action"] == "create_sheet":
-
-            title = action["title"]
-
-            spreadsheet.add_worksheet(
-                title=title + "_" + str(message.message_id),
-                rows="100",
-                cols="20"
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ]
             )
 
-            await message.answer(
-                f"Created sheet: {title}"
-            )
+            answer = response.choices[0].message.content
+
+            # CLEAN JSON
+
+            answer = answer.replace("```json", "")
+            answer = answer.replace("```", "")
+            answer = answer.strip()
+
+            try:
+
+                action = json.loads(answer)
+
+            except Exception:
+
+                await message.answer(answer)
+
+                return
+
+            # CREATE SHEET
+
+            if action["action"] == "create_sheet":
+
+                title = action["title"]
+
+                spreadsheet.add_worksheet(
+                    title=title + "_" + str(message.message_id),
+                    rows="100",
+                    cols="20"
+                )
+
+                await message.answer(
+                    f"Created sheet: {title}"
+                )
+
+                return
+
+            # WRITE CELL
+
+            if action["action"] == "write_cell":
+
+                cell = action["cell"]
+
+                value = action["value"]
+
+                main_sheet.update(cell, [[value]])
+
+                await message.answer(
+                    f"Wrote {value} to {cell}"
+                )
+
+                return
+
+            await message.answer(str(action))
 
             return
-
-        # WRITE CELL
-
-        if action["action"] == "write_cell":
-
-            cell = action["cell"]
-
-            value = action["value"]
-
-            main_sheet.update(cell, [[value]])
-
-            await message.answer(
-                f"Wrote {value} to {cell}"
-            )
-
-            return
-
-        await message.answer(str(action))
 
     except Exception as e:
 
