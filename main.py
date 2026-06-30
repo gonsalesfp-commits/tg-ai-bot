@@ -4,6 +4,7 @@ from openai import OpenAI
 import asyncio
 import os
 import base64
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -19,7 +20,6 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
-
     "https://www.googleapis.com/auth/drive"
 ]
 
@@ -32,99 +32,18 @@ gs_client = gspread.authorize(creds)
 
 sheet = gs_client.open("TEST BOT").sheet1
 
+
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    await message.answer("AI + Sheets bot online")
+    await message.answer("AI + Sheets + Vision bot online")
 
-@dp.message()
-async def chat(message: types.Message):
 
-    text = message.text
+# PHOTO / VISION HANDLER
 
-    # GPT planner
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": """
-You are an AI spreadsheet assistant.
-
-You must return ONLY JSON.
-
-Available actions:
-
-1. create_sheet
-Example:
-{
-  "action": "create_sheet",
-  "title": "Buyers"
-}
-
-2. write_cell
-Example:
-{
-  "action": "write_cell",
-  "cell": "A1",
-  "value": "hello"
-}
-"""
-            },
-            {
-                "role": "user",
-                "content": text
-            }
-        ]
-    )
-
-    answer = response.choices[0].message.content
-
-    # PARSE JSON
-
-    import json
-
-    try:
-
-        action = json.loads(answer)
-
-    except Exception as e:
-
-        await message.answer(f"JSON ERROR: {e}")
-        return
-
-    # EXECUTOR
-
-    if action["action"] == "create_sheet":
-
-        title = action["title"]
-
-        sheet.spreadsheet.add_worksheet(
-            title=title,
-            rows="100",
-            cols="20"
-        )
-
-        await message.answer(f"Created sheet: {title}")
-
-        return
-
-    if action["action"] == "write_cell":
-
-        cell = action["cell"]
-        value = action["value"]
-
-        sheet.update(cell, [[value]])
-
-        await message.answer(f"Wrote {value} to {cell}")
-
-        return
-
-    await message.answer(str(action))
-    @dp.message(lambda message: message.photo)
+@dp.message(lambda message: message.photo)
 async def handle_photo(message: types.Message):
 
-    # biggest photo
+    # biggest image
     photo = message.photo[-1]
 
     file_info = await bot.get_file(photo.file_id)
@@ -167,8 +86,99 @@ Return ONLY JSON.
     answer = response.choices[0].message.content
 
     await message.answer(answer)
+
+
+# TEXT HANDLER
+
+@dp.message()
+async def chat(message: types.Message):
+
+    text = message.text
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are an AI spreadsheet assistant.
+
+You must return ONLY JSON.
+
+Available actions:
+
+1. create_sheet
+
+Example:
+{
+  "action": "create_sheet",
+  "title": "Buyers"
+}
+
+2. write_cell
+
+Example:
+{
+  "action": "write_cell",
+  "cell": "A1",
+  "value": "hello"
+}
+"""
+            },
+            {
+                "role": "user",
+                "content": text
+            }
+        ]
+    )
+
+    answer = response.choices[0].message.content
+
+    try:
+
+        action = json.loads(answer)
+
+    except Exception as e:
+
+        await message.answer(f"JSON ERROR: {e}")
+        return
+
+    # CREATE SHEET
+
+    if action["action"] == "create_sheet":
+
+        title = action["title"]
+
+        sheet.spreadsheet.add_worksheet(
+            title=title,
+            rows="100",
+            cols="20"
+        )
+
+        await message.answer(f"Created sheet: {title}")
+
+        return
+
+    # WRITE CELL
+
+    if action["action"] == "write_cell":
+
+        cell = action["cell"]
+
+        value = action["value"]
+
+        sheet.update(cell, [[value]])
+
+        await message.answer(f"Wrote {value} to {cell}")
+
+        return
+
+    await message.answer(str(action))
+
+
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
