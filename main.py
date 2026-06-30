@@ -8,11 +8,17 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
+# TOKENS
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# TELEGRAM
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# OPENAI
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -30,62 +36,132 @@ creds = Credentials.from_service_account_file(
 
 gs_client = gspread.authorize(creds)
 
-sheet = gs_client.open("TEST BOT").sheet1
+spreadsheet = gs_client.open("TEST BOT")
 
+main_sheet = spreadsheet.sheet1
+
+
+# START
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    await message.answer("AI + Sheets + Vision bot online")
+
+    await message.answer("AI Spreadsheet Operator Online")
 
 
-# PHOTO / VISION HANDLER
+# PHOTO HANDLER
 
-@dp.message(lambda message: message.photo)
+@dp.message(lambda m: m.photo)
 async def handle_photo(message: types.Message):
 
-    # biggest image
-    photo = message.photo[-1]
+    try:
 
-    file_info = await bot.get_file(photo.file_id)
+        # GET PHOTO
 
-    file_path = file_info.file_path
+        photo = message.photo[-1]
 
-    downloaded_file = await bot.download_file(file_path)
+        file = await bot.get_file(photo.file_id)
 
-    image_bytes = downloaded_file.read()
+        downloaded = await bot.download_file(file.file_path)
 
-    base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        image_bytes = downloaded.read()
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": """
-Read this screenshot.
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-Extract all useful report/statistics data.
+        # GPT VISION
 
-Return ONLY JSON.
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+You are an AI spreadsheet operator.
+
+Analyze screenshots with reports/statistics.
+
+Your task:
+
+1. Extract report data
+2. Build spreadsheet structure
+3. Return ONLY valid JSON
+
+FORMAT:
+
+{
+  "action": "create_report",
+  "sheet_title": "Daily Report",
+  "headers": [
+    "Buyer",
+    "Spend",
+    "Deps",
+    "Revenue",
+    "Profit",
+    "ROI"
+  ],
+  "rows": [
+    ["Buyer1", "100", "2", "150", "50", "50%"]
+  ]
+}
 """
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}"
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this screenshot and create report table JSON."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
                         }
-                    }
-                ]
-            }
-        ]
-    )
+                    ]
+                }
+            ]
+        )
 
-    answer = response.choices[0].message.content
+        answer = response.choices[0].message.content
 
-    await message.answer(answer)
+        # PARSE JSON
+
+        data = json.loads(answer)
+
+        # EXECUTOR
+
+        if data["action"] == "create_report":
+
+            # CREATE NEW SHEET
+
+            report_sheet = spreadsheet.add_worksheet(
+                title=data["sheet_title"],
+                rows="300",
+                cols="20"
+            )
+
+            # ADD HEADERS
+
+            report_sheet.append_row(data["headers"])
+
+            # ADD ROWS
+
+            for row in data["rows"]:
+
+                report_sheet.append_row(row)
+
+            await message.answer(
+                f'Report "{data["sheet_title"]}" created successfully'
+            )
+
+            return
+
+        await message.answer(str(data))
+
+    except Exception as e:
+
+        await message.answer(f"PHOTO ERROR: {e}")
 
 
 # TEXT HANDLER
@@ -93,23 +169,27 @@ Return ONLY JSON.
 @dp.message()
 async def chat(message: types.Message):
 
-    text = message.text
+    try:
 
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": """
+        text = message.text
+
+        # GPT PLANNER
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
 You are an AI spreadsheet assistant.
 
-You must return ONLY JSON.
+Return ONLY valid JSON.
 
-Available actions:
+AVAILABLE ACTIONS:
 
 1. create_sheet
 
-Example:
+FORMAT:
 {
   "action": "create_sheet",
   "title": "Buyers"
@@ -117,68 +197,82 @@ Example:
 
 2. write_cell
 
-Example:
+FORMAT:
 {
   "action": "write_cell",
   "cell": "A1",
   "value": "hello"
 }
 """
-            },
-            {
-                "role": "user",
-                "content": text
-            }
-        ]
-    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ]
+        )
 
-    answer = response.choices[0].message.content
+        answer = response.choices[0].message.content
 
-    try:
+        # PARSE JSON
 
-        action = json.loads(answer)
+        try:
+
+            action = json.loads(answer)
+
+        except Exception:
+
+            await message.answer(answer)
+            return
+
+        # CREATE SHEET
+
+        if action["action"] == "create_sheet":
+
+            title = action["title"]
+
+            spreadsheet.add_worksheet(
+                title=title,
+                rows="100",
+                cols="20"
+            )
+
+            await message.answer(
+                f"Created sheet: {title}"
+            )
+
+            return
+
+        # WRITE CELL
+
+        if action["action"] == "write_cell":
+
+            cell = action["cell"]
+
+            value = action["value"]
+
+            main_sheet.update(cell, [[value]])
+
+            await message.answer(
+                f"Wrote {value} to {cell}"
+            )
+
+            return
+
+        await message.answer(str(action))
 
     except Exception as e:
 
-        await message.answer(f"JSON ERROR: {e}")
-        return
+        await message.answer(f"TEXT ERROR: {e}")
 
-    # CREATE SHEET
 
-    if action["action"] == "create_sheet":
-
-        title = action["title"]
-
-        sheet.spreadsheet.add_worksheet(
-            title=title,
-            rows="100",
-            cols="20"
-        )
-
-        await message.answer(f"Created sheet: {title}")
-
-        return
-
-    # WRITE CELL
-
-    if action["action"] == "write_cell":
-
-        cell = action["cell"]
-
-        value = action["value"]
-
-        sheet.update(cell, [[value]])
-
-        await message.answer(f"Wrote {value} to {cell}")
-
-        return
-
-    await message.answer(str(action))
-
+# MAIN
 
 async def main():
+
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
+
     asyncio.run(main())
