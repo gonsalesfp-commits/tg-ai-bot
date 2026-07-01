@@ -403,35 +403,73 @@ async def execute_action(action, spreadsheet, message, chat_id):
     await message.answer(f"⚠️ Неизвестное действие: {act}")
  
 # =========================================
-# GPT SHEET CALL
+# GPT SHEET CALL — только парсинг команд
 # =========================================
-SHEET_HISTORY_LIMIT = 10  # держим только последние 10 сообщений
+SHEET_HISTORY_LIMIT = 6  # только последние 6 сообщений
  
-async def gpt_sheet(content, spreadsheet, chat_id):
-    """Универсальный вызов GPT для sheet-режима. content — список messages от user."""
+# Захардкоженные ответы на типичные вопросы — GPT не отвечает текстом вообще
+HARDCODED_ANSWERS = {
+    "почт": "tg-bot@just-sunrise-501012-t4.iam.gserviceaccount.com",
+    "email": "tg-bot@just-sunrise-501012-t4.iam.gserviceaccount.com",
+    "mail": "tg-bot@just-sunrise-501012-t4.iam.gserviceaccount.com",
+    "умеешь": "Создаю таблицы, добавляю данные, удаляю листы, очищаю диапазоны. Всё в документе «{title}».",
+    "можешь": "Создаю таблицы, добавляю данные, удаляю листы, очищаю диапазоны. Всё в документе «{title}».",
+    "видишь": "Подключён к «{title}». Что сделать?",
+    "привет": "Привет. Подключён к «{title}». Что нужно сделать?",
+    "хай": "Привет. Подключён к «{title}». Что нужно сделать?",
+}
+ 
+def check_hardcoded(text: str, spreadsheet_title: str) -> str | None:
+    """Если текст похож на общий вопрос — возвращаем хардкоженный ответ."""
+    low = text.lower()
+    for keyword, answer in HARDCODED_ANSWERS.items():
+        if keyword in low:
+            return answer.format(title=spreadsheet_title)
+    return None
+ 
+async def gpt_parse_action(text: str, spreadsheet, chat_id: int) -> dict | None:
+    """GPT используется ТОЛЬКО для парсинга команды в JSON. Никаких текстовых ответов."""
     history = sheet_history.get(chat_id, [])[-SHEET_HISTORY_LIMIT:]
- 
-    # Напоминание о роли вставляем перед каждым запросом — GPT не забывает кто он
-    role_reminder = {
-        "role": "user",
-        "content": f"[SYSTEM REMINDER: You are a Google Sheets operator connected to \"{spreadsheet.title}\". Stay in this role. Do not switch behavior.]"
-    }
  
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0,
         messages=[
             {"role": "system", "content": sheets_system(spreadsheet.title, mem_ctx(chat_id))}
-        ] + history + [role_reminder] + content
+        ] + history + [
+            {"role": "user", "content": text}
+        ]
     )
     answer = response.choices[0].message.content
  
-    # Сохраняем только реальные сообщения пользователя (без reminder)
-    history += content
+    # Сохраняем в историю
+    history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": answer})
     sheet_history[chat_id] = history[-SHEET_HISTORY_LIMIT:]
  
-    return answer
+    return extract_json(answer)
+ 
+async def gpt_parse_action_photo(b64: str, caption: str, spreadsheet, chat_id: int) -> dict | None:
+    """GPT для фото — только возвращает JSON действие."""
+    history = sheet_history.get(chat_id, [])[-SHEET_HISTORY_LIMIT:]
+ 
+    response = client.chat.completions.create(
+        model="gpt-4.1",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": sheets_system(spreadsheet.title, mem_ctx(chat_id))}
+        ] + history + [
+            {"role": "user", "content": [
+                {"type": "text", "text": caption},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}
+            ]}
+        ]
+    )
+    answer = response.choices[0].message.content
+    history.append({"role": "user", "content": caption})
+    history.append({"role": "assistant", "content": answer})
+    sheet_history[chat_id] = history[-SHEET_HISTORY_LIMIT:]
+    return extract_json(answer)
  
 # =========================================
 # START / COMMANDS / BUTTONS
@@ -499,17 +537,11 @@ async def handle_photo(message: types.Message):
             spreadsheet = active_spreadsheets.get(chat_id, default_spreadsheet)
             await message.answer("🔍 Анализирую...")
             caption = message.caption or "Build a table based on this reference. Reproduce the full structure with all blocks and columns. Use write_layout if there are multiple sections."
-            user_content = [{"role":"user","content":[
-                {"type":"text","text":caption},
-                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}","detail":"high"}}
-            ]}]
-            answer = await gpt_sheet(user_content, spreadsheet, chat_id)
-            action = extract_json(answer)
+            action = await gpt_parse_action_photo(b64, caption, spreadsheet, chat_id)
             if action:
                 await execute_action(action, spreadsheet, message, chat_id)
             else:
-                # GPT ответил текстом — это диалог
-                await message.answer(answer)
+                await message.answer("❓ Не понял что нужно сделать с этим изображением. Уточни задачу.")
  
     except Exception as e:
         await message.answer(f"PHOTO ERROR:\n{e}")
@@ -551,7 +583,6 @@ async def handle_text(message: types.Message):
                 try:
                     opened = gs_client.open_by_url(url)
                     active_spreadsheets[chat_id] = opened
-                    # Сбрасываем историю при переключении документа
                     sheet_history[chat_id] = []
                     await message.answer(f'✅ Подключился к "{opened.title}"')
                 except Exception as e:
@@ -559,15 +590,25 @@ async def handle_text(message: types.Message):
                 return
  
             spreadsheet = active_spreadsheets.get(chat_id, default_spreadsheet)
-            answer = await gpt_sheet([{"role":"user","content":text}], spreadsheet, chat_id)
  
-            action = extract_json(answer)
+            # Сначала проверяем захардкоженные ответы — GPT не трогаем
+            hardcoded = check_hardcoded(text, spreadsheet.title)
+            if hardcoded:
+                await message.answer(hardcoded)
+                return
+ 
+            # GPT только парсит команду → JSON
+            action = await gpt_parse_action(text, spreadsheet, chat_id)
+ 
             if action and "action" in action:
-                # Это команда — выполняем
                 await execute_action(action, spreadsheet, message, chat_id)
             else:
-                # Это диалог или вопрос — просто отвечаем текстом
-                await message.answer(answer)
+                # JSON не получили — значит команда непонятна
+                # Не даём GPT отвечать свободно, отвечаем сами
+                await message.answer(
+                    f"❓ Не понял команду. Я работаю только с таблицей «{spreadsheet.title}».\n"
+                    f"Скажи что нужно сделать: создать лист, добавить данные, удалить вкладку и т.д."
+                )
  
     except Exception as e:
         await message.answer(f"TEXT ERROR:\n{e}")
