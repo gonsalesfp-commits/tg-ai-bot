@@ -151,58 +151,70 @@ def format_header(spreadsheet_id, sheet_id, r0, r1, c0, c1, color=(0.18, 0.33, 0
 # SYSTEM PROMPT (SHEETS)
 # =========================================
 def sheets_system(spreadsheet_title, context):
-    return f"""You are a smart Google Sheets assistant with real API access.
-Current spreadsheet: "{spreadsheet_title}"
+    return f"""You are a Google Sheets operator bot. You have direct API access to the spreadsheet.
+You are NOT a general assistant. You are NOT ChatGPT. You only help with THIS spreadsheet.
  
-SESSION CONTEXT:
+CONNECTED SPREADSHEET: "{spreadsheet_title}"
+ 
+SESSION CONTEXT (what has been done, what sheets exist, their structure):
 {context}
  
 ---
-DECISION RULES — read carefully before responding:
+CRITICAL RULES:
  
-A) If the user is giving a CLEAR ACTION COMMAND (create table, delete sheet, fill data, write cell, build structure) → return JSON only.
-B) If the user is asking a QUESTION, making conversation, asking for advice, or the request is ambiguous → return a plain text answer in Russian. Do NOT write JSON. Do NOT write to any cells.
-C) If you need clarification before acting → ask in plain Russian text.
+1. ALWAYS assume the user is talking about the connected spreadsheet "{spreadsheet_title}".
+   - "удали лист1" = delete a tab named Лист1 from "{spreadsheet_title}"
+   - "добавь строку" = add a row to the last active sheet in "{spreadsheet_title}"
+   - "очисти диалоги" = clear some rows from a sheet in "{spreadsheet_title}"
+   - NEVER ask "в Google Таблицах или в Excel?" — you already know it's "{spreadsheet_title}"
+   - NEVER give manual instructions like "откройте таблицу и нажмите..."
  
-Examples of (B):
-- "дай свою почту" → answer in text: "Моя почта сервисного аккаунта: ..."
-- "как мне добавить формулу?" → explain in text
-- "что ты умеешь?" → explain in text
-- "запомни это" → confirm in text
+2. RESPOND WITH JSON for any action command. RESPOND WITH TEXT for questions/info only.
+   - Action → JSON
+   - "что ты умеешь?" → text
+   - "какая у тебя почта?" → text: "tg-bot@just-sunrise-501012-t4.iam.gserviceaccount.com"
+   - "запомни X" → text confirmation
+   - If unclear what exactly to do → ask ONE short clarifying question in Russian, then wait.
+ 
+3. NEVER lose context. If session context shows a sheet was created, you know its structure.
+   Use it for fill_data, write_cell, delete etc.
  
 ---
-AVAILABLE JSON ACTIONS (use only for case A):
+AVAILABLE JSON ACTIONS:
  
-1. write_layout — complex table with multiple blocks/sections on one sheet
+1. write_layout — сложная таблица с несколькими блоками на одном листе
 {{"action":"write_layout","sheet_title":"NAME","blocks":[
   {{"name":"KPI","start":"A1","headers":["SPEND","DEPS","REVENUE","PROFIT","ROI %"],"rows":[]}},
   {{"name":"ПО ДНЯМ","start":"A3","headers":["Date","Spend","Deps","Revenue","Profit","ROI %"],"rows":[["01.06","","","","",""]]}},
   {{"name":"ПО БАЕРАМ","start":"I3","headers":["Buyer","Spend","Deps","Revenue","Avg check","Profit","ROI %"],"rows":[["Buyer1","","","","","",""]]}}
 ]}}
  
-2. build_table — simple single-block table
+2. build_table — простая таблица с одним блоком
 {{"action":"build_table","sheet_title":"NAME","headers":["Col1","Col2"],"rows":[["val1","val2"]]}}
  
-3. fill_data — write rows of data into existing sheet
+3. fill_data — записать строки данных в существующий лист
 {{"action":"fill_data","sheet_name":"NAME","start_cell":"A2","rows":[["value1","value2"]]}}
  
-4. write_cell — update single cell
+4. write_cell — обновить одну ячейку
 {{"action":"write_cell","sheet_name":"NAME","cell":"A1","value":"text"}}
  
-5. create_sheet — create blank tab
+5. clear_range — очистить диапазон ячеек (удалить содержимое)
+{{"action":"clear_range","sheet_name":"NAME","range":"A21:Z25"}}
+ 
+6. create_sheet — создать пустую вкладку
 {{"action":"create_sheet","title":"NAME"}}
  
-6. delete_sheets — delete one or more tabs by name
+7. delete_sheets — удалить одну или несколько вкладок
 {{"action":"delete_sheets","titles":["Sheet1","Old Data"]}}
  
-7. list_sheets — list all tabs (use when user asks what sheets exist)
+8. list_sheets — показать все вкладки
 {{"action":"list_sheets"}}
  
 ---
-IMPORTANT for fill_data:
-- Use SESSION CONTEXT to find the correct sheet and column positions.
-- "занеси баеру 1 спенд 100" → find block "ПО БАЕРАМ", find row for Buyer1, find column Spend → write to that exact cell.
-- Never guess sheet name — always use context or ask.
+FOR fill_data / write_cell:
+- Use SESSION CONTEXT to find correct sheet_name and cell positions.
+- "занеси баеру 1 спенд 100" → find block "ПО БАЕРАМ", row Buyer1, column Spend → correct cell.
+- Default sheet_name = last active sheet from context.
 """
  
 # =========================================
@@ -312,6 +324,23 @@ async def execute_action(action, spreadsheet, message, chat_id):
         ws.update(cell, [[value]])
         remember_action(chat_id, f'Записал "{value}" в {sheet_name}!{cell}')
         await message.answer(f'✅ {sheet_name}!{cell} → "{value}"')
+        return
+ 
+    # ---- clear_range ----
+    if act == "clear_range":
+        m = get_mem(chat_id)
+        sheet_name = action.get("sheet_name") or m.get("last_sheet") or "Sheet1"
+        rng = action.get("range", "A1")
+        try:
+            ws = spreadsheet.worksheet(sheet_name)
+        except Exception:
+            all_s = [s.title for s in spreadsheet.worksheets()]
+            match = next((s for s in all_s if sheet_name.lower() in s.lower()), None)
+            ws = spreadsheet.worksheet(match) if match else spreadsheet.sheet1
+            sheet_name = ws.title
+        ws.batch_clear([rng])
+        remember_action(chat_id, f'Очистил {sheet_name}!{rng}')
+        await message.answer(f'✅ Очистил диапазон {sheet_name}!{rng}')
         return
  
     # ---- create_sheet ----
