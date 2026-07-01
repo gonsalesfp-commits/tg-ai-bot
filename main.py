@@ -405,24 +405,31 @@ async def execute_action(action, spreadsheet, message, chat_id):
 # =========================================
 # GPT SHEET CALL
 # =========================================
+SHEET_HISTORY_LIMIT = 10  # держим только последние 10 сообщений
+ 
 async def gpt_sheet(content, spreadsheet, chat_id):
     """Универсальный вызов GPT для sheet-режима. content — список messages от user."""
-    history = sheet_history.get(chat_id, [])
-    history = history[-(MAX_HISTORY):]
+    history = sheet_history.get(chat_id, [])[-SHEET_HISTORY_LIMIT:]
+ 
+    # Напоминание о роли вставляем перед каждым запросом — GPT не забывает кто он
+    role_reminder = {
+        "role": "user",
+        "content": f"[SYSTEM REMINDER: You are a Google Sheets operator connected to \"{spreadsheet.title}\". Stay in this role. Do not switch behavior.]"
+    }
  
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0,
         messages=[
             {"role": "system", "content": sheets_system(spreadsheet.title, mem_ctx(chat_id))}
-        ] + history + content
+        ] + history + [role_reminder] + content
     )
     answer = response.choices[0].message.content
  
-    # Добавляем в историю sheet-диалога
+    # Сохраняем только реальные сообщения пользователя (без reminder)
     history += content
     history.append({"role": "assistant", "content": answer})
-    sheet_history[chat_id] = history[-MAX_HISTORY:]
+    sheet_history[chat_id] = history[-SHEET_HISTORY_LIMIT:]
  
     return answer
  
