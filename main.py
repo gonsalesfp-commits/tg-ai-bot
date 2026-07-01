@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import csv
+import io
 import json
 import os
 import re
@@ -11,6 +13,12 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from openai import OpenAI
+ 
+try:
+    import openpyxl
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
  
 # =========================================
 # CLIENTS
@@ -536,6 +544,129 @@ async def handle_photo(message: types.Message):
  
     except Exception as e:
         await message.answer(f"PHOTO ERROR:\n{e}")
+ 
+# =========================================
+# FILE PARSERS
+# =========================================
+def parse_csv(data: bytes) -> list[list[str]]:
+    """Парсит CSV в список строк."""
+    text = data.decode("utf-8-sig", errors="replace")
+    reader = csv.reader(io.StringIO(text))
+    return [row for row in reader if any(cell.strip() for cell in row)]
+ 
+def parse_xlsx(data: bytes) -> list[list[str]]:
+    """Парсит XLSX в список строк."""
+    if not HAS_OPENPYXL:
+        raise RuntimeError("openpyxl не установлен")
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    ws = wb.active
+    rows = []
+    for row in ws.iter_rows(values_only=True):
+        str_row = [str(cell) if cell is not None else "" for cell in row]
+        if any(c.strip() for c in str_row):
+            rows.append(str_row)
+    return rows
+ 
+def rows_to_text(rows: list[list[str]], max_rows: int = 200) -> str:
+    """Конвертирует строки в читаемый текст для GPT."""
+    if not rows:
+        return "(пустой файл)"
+    total = len(rows)
+    sample = rows[:max_rows]
+    lines = ["\t".join(r) for r in sample]
+    result = "\n".join(lines)
+    if total > max_rows:
+        result += f"\n... (показано {max_rows} из {total} строк)"
+    return result
+ 
+# ---- DOCUMENT (CSV / XLSX / другие файлы) ----
+@dp.message(lambda m: m.document)
+async def handle_document(message: types.Message):
+    try:
+        chat_id = message.chat.id
+        mode = user_modes.get(chat_id, "chat")
+        doc = message.document
+        fname = (doc.file_name or "").lower()
+        caption = message.caption or ""
+ 
+        # Скачиваем файл
+        file = await bot.get_file(doc.file_id)
+        data = (await bot.download_file(file.file_path)).read()
+ 
+        # CHAT MODE — просто анализируем текстом
+        if mode == "chat":
+            if fname.endswith(".csv"):
+                rows = parse_csv(data)
+                content = rows_to_text(rows)
+                prompt = f"{caption}\n\nСодержимое файла {doc.file_name}:\n{content}" if caption else f"Вот содержимое файла {doc.file_name}:\n{content}"
+            elif fname.endswith((".xlsx", ".xls")):
+                rows = parse_xlsx(data)
+                content = rows_to_text(rows)
+                prompt = f"{caption}\n\nСодержимое файла {doc.file_name}:\n{content}" if caption else f"Вот содержимое файла {doc.file_name}:\n{content}"
+            else:
+                await message.answer("В режиме чата поддерживаю CSV и XLSX файлы.")
+                return
+ 
+            history = chat_history.get(chat_id, [])
+            history.append({"role": "user", "content": prompt})
+            resp = ai.chat.completions.create(
+                model="gpt-4.1",
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI assistant. Speak naturally in Russian."}
+                ] + history[-MAX_CHAT_HISTORY:],
+                temperature=0.7,
+            )
+            answer = resp.choices[0].message.content
+            history.append({"role": "assistant", "content": answer})
+            chat_history[chat_id] = history[-MAX_CHAT_HISTORY:]
+            await message.answer(answer)
+            return
+ 
+        # SHEET MODE — передаём данные в agent loop
+        if mode == "sheet":
+            spreadsheet = active_spreadsheets.get(chat_id, default_spreadsheet)
+ 
+            if fname.endswith(".csv"):
+                rows = parse_csv(data)
+            elif fname.endswith((".xlsx", ".xls")):
+                rows = parse_xlsx(data)
+            else:
+                await message.answer(f"⚠️ Формат не поддерживается. Жди CSV или XLSX.")
+                return
+ 
+            content = rows_to_text(rows)
+            row_count = len(rows)
+            col_count = max((len(r) for r in rows), default=0)
+ 
+            # Формируем промпт для агента
+            user_prompt = (
+                f"{caption}\n\n" if caption else ""
+            ) + (
+                f"Файл: {doc.file_name} ({row_count} строк, {col_count} колонок)\n\n"
+                f"Данные:\n{content}\n\n"
+                f"Задача: загрузи эти данные в таблицу «{spreadsheet.title}». "
+                f"Создай новый лист с названием из первой строки или именем файла, "
+                f"запиши все данные, отформатируй заголовок."
+            )
+ 
+            status_msg = await message.answer(f"📂 Читаю {doc.file_name} ({row_count} строк)...")
+            sent_statuses = [status_msg]
+ 
+            async def update_status(text_s):
+                try:
+                    await sent_statuses[-1].edit_text(text_s)
+                except Exception:
+                    m = await message.answer(text_s)
+                    sent_statuses.append(m)
+ 
+            result = await run_agent(user_prompt, spreadsheet, chat_id, update_status)
+            try:
+                await sent_statuses[-1].edit_text(result)
+            except Exception:
+                await message.answer(result)
+ 
+    except Exception as e:
+        await message.answer(f"FILE ERROR:\n{e}")
  
 # ---- TEXT ----
 @dp.message()
