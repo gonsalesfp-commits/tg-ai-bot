@@ -3,7 +3,7 @@ import base64
 import json
 import os
 import re
-
+ 
 import gspread
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
@@ -11,17 +11,17 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from openai import OpenAI
-
+ 
 # =========================================
 # CLIENTS
 # =========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
+ 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 ai = OpenAI(api_key=OPENAI_API_KEY)
-
+ 
 # =========================================
 # GOOGLE
 # =========================================
@@ -36,7 +36,7 @@ creds = Credentials.from_service_account_file(
 gs_client = gspread.authorize(creds)
 sheets_svc = build("sheets", "v4", credentials=creds)
 default_spreadsheet = gs_client.open("TEST BOT")
-
+ 
 # =========================================
 # STATE
 # =========================================
@@ -47,7 +47,7 @@ active_spreadsheets: dict[int, gspread.Spreadsheet] = {}
 MAX_CHAT_HISTORY = 40
 MAX_SHEET_HISTORY = 20
 MAX_AGENT_STEPS = 8  # максимум шагов агента за одно сообщение
-
+ 
 # =========================================
 # KEYBOARD
 # =========================================
@@ -56,7 +56,7 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
     input_field_placeholder="Choose mode",
 )
-
+ 
 # =========================================
 # TOOLS — то что GPT может вызывать сам
 # =========================================
@@ -202,7 +202,7 @@ TOOLS = [
         },
     },
 ]
-
+ 
 # =========================================
 # TOOL EXECUTORS
 # =========================================
@@ -212,7 +212,7 @@ HEADER_COLORS = {
     "dark":  (0.15, 0.15, 0.20),
     "gray":  (0.45, 0.45, 0.50),
 }
-
+ 
 def _get_ws(spreadsheet: gspread.Spreadsheet, sheet_name: str) -> gspread.Worksheet:
     try:
         return spreadsheet.worksheet(sheet_name)
@@ -222,24 +222,24 @@ def _get_ws(spreadsheet: gspread.Spreadsheet, sheet_name: str) -> gspread.Worksh
         if match:
             return spreadsheet.worksheet(match)
         raise ValueError(f"Лист '{sheet_name}' не найден. Доступные: {all_titles}")
-
+ 
 def tool_read_range(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     values = ws.get(args["range"])
     if not values:
         return {"values": [], "note": "Range is empty"}
     return {"sheet": args["sheet_name"], "range": args["range"], "values": values}
-
+ 
 def tool_write_range(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     ws.update(args["start_cell"], args["values"])
     return {"ok": True, "written_rows": len(args["values"]), "start": args["start_cell"]}
-
+ 
 def tool_clear_range(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     ws.batch_clear([args["range"]])
     return {"ok": True, "cleared": args["range"]}
-
+ 
 def tool_delete_rows(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     sheet_id = ws.id
@@ -259,7 +259,7 @@ def tool_delete_rows(spreadsheet, args):
         }]}
     ).execute()
     return {"ok": True, "deleted_rows": f"{args['start_row']}-{args['end_row']}"}
-
+ 
 def tool_create_sheet(spreadsheet, args):
     title = args["title"]
     existing = [s.title for s in spreadsheet.worksheets()]
@@ -271,7 +271,7 @@ def tool_create_sheet(spreadsheet, args):
         cols=args.get("cols", 30),
     )
     return {"ok": True, "created": title, "sheet_id": ws.id}
-
+ 
 def tool_delete_sheet(spreadsheet, args):
     all_sheets = spreadsheet.worksheets()
     if len(all_sheets) <= 1:
@@ -279,11 +279,11 @@ def tool_delete_sheet(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     spreadsheet.del_worksheet(ws)
     return {"ok": True, "deleted": args["sheet_name"]}
-
+ 
 def tool_list_sheets(spreadsheet, args):
     sheets = spreadsheet.worksheets()
     return {"sheets": [{"title": s.title, "id": s.id, "rows": s.row_count, "cols": s.col_count} for s in sheets]}
-
+ 
 def tool_format_header(spreadsheet, args):
     ws = _get_ws(spreadsheet, args["sheet_name"])
     sheet_id = ws.id
@@ -320,7 +320,7 @@ def tool_format_header(spreadsheet, args):
         ]}
     ).execute()
     return {"ok": True, "formatted_row": args["row"], "sheet": args["sheet_name"]}
-
+ 
 TOOL_MAP = {
     "read_range": tool_read_range,
     "write_range": tool_write_range,
@@ -331,7 +331,7 @@ TOOL_MAP = {
     "list_sheets": tool_list_sheets,
     "format_header": tool_format_header,
 }
-
+ 
 def execute_tool(name: str, args: dict, spreadsheet: gspread.Spreadsheet) -> str:
     if name not in TOOL_MAP:
         return json.dumps({"error": f"Unknown tool: {name}"})
@@ -340,30 +340,30 @@ def execute_tool(name: str, args: dict, spreadsheet: gspread.Spreadsheet) -> str
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})
-
+ 
 # =========================================
 # SYSTEM PROMPT
 # =========================================
 def system_prompt(spreadsheet_title: str) -> str:
     return f"""You are a Google Sheets agent with direct API access to "{spreadsheet_title}".
-
+ 
 You work in an agent loop: you can call tools multiple times until the task is complete.
 Always read data before editing it — never guess cell values.
-
+ 
 RULES:
 - Always call read_range first when you need to see current data
 - After completing all actions, call done() with a short Russian summary
 - Communicate with the user in Russian
 - If a task requires multiple steps, do them all before calling done()
 - Never fabricate data you haven't read — use read_range to check
-
+ 
 EXAMPLES of multi-step tasks:
 - "убери пробелы в строках 20-26" → read_range → process values → write_range → done
 - "перенеси строки 27-33 в строку 20" → read_range(27:33) → write_range(A20) → clear_range(27:33) → done
 - "построй таблицу" → create_sheet → write_range (headers+data) → format_header → done
 - "удали все вкладки кроме вкладки 5" → list_sheets → delete_sheet × N → done
 """
-
+ 
 # =========================================
 # AGENT LOOP
 # =========================================
@@ -378,15 +378,15 @@ async def run_agent(
     Возвращает финальный summary.
     """
     history = sheet_history.get(chat_id, [])[-MAX_SHEET_HISTORY:]
-
+ 
     # Добавляем сообщение пользователя
     if isinstance(user_message, str):
         history.append({"role": "user", "content": user_message})
     else:
         history.append({"role": "user", "content": user_message})
-
+ 
     messages = [{"role": "system", "content": system_prompt(spreadsheet.title)}] + history
-
+ 
     for step in range(MAX_AGENT_STEPS):
         response = ai.chat.completions.create(
             model="gpt-4.1",
@@ -395,21 +395,21 @@ async def run_agent(
             tool_choice="auto",
             temperature=0,
         )
-
+ 
         msg = response.choices[0].message
         messages.append(msg)
-
+ 
         # Нет tool calls — GPT хочет ответить текстом (не должно быть, но на всякий)
         if not msg.tool_calls:
             final = msg.content or "Готово."
             _save_history(chat_id, history, msg)
             return final
-
+ 
         # Обрабатываем все tool calls
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             fn_args = json.loads(tc.function.arguments)
-
+ 
             # done() — завершение
             if fn_name == "done":
                 summary = fn_args.get("summary", "Готово.")
@@ -418,24 +418,24 @@ async def run_agent(
                 if url:
                     return f"✅ {summary}\n🔗 {url}"
                 return f"✅ {summary}"
-
+ 
             # Статус пользователю
             status = _tool_status(fn_name, fn_args)
             await status_callback(status)
-
+ 
             # Выполняем инструмент
             result = execute_tool(fn_name, fn_args, spreadsheet)
-
+ 
             # Добавляем результат в messages
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
                 "content": result,
             })
-
+ 
     _save_history(chat_id, history, None)
     return "⚠️ Достигнут лимит шагов. Задача могла выполниться частично."
-
+ 
 def _tool_status(fn_name: str, args: dict) -> str:
     labels = {
         "read_range": lambda a: f"📖 Читаю {a.get('sheet_name')}!{a.get('range')}...",
@@ -449,12 +449,12 @@ def _tool_status(fn_name: str, args: dict) -> str:
     }
     fn = labels.get(fn_name)
     return fn(args) if fn else f"⚙️ {fn_name}..."
-
+ 
 def _save_history(chat_id, history, last_msg):
     if last_msg:
         history.append({"role": "assistant", "content": last_msg.content or ""})
     sheet_history[chat_id] = history[-MAX_SHEET_HISTORY:]
-
+ 
 # =========================================
 # HANDLERS
 # =========================================
@@ -463,38 +463,38 @@ async def start(message: types.Message):
     user_modes[message.chat.id] = "chat"
     active_spreadsheets[message.chat.id] = default_spreadsheet
     await message.answer("Choose mode:", reply_markup=main_keyboard)
-
+ 
 @dp.message(Command("chat"))
 async def cmd_chat(message: types.Message):
     user_modes[message.chat.id] = "chat"
     await message.answer("💬 Chat mode enabled", reply_markup=main_keyboard)
-
+ 
 @dp.message(Command("sheet"))
 async def cmd_sheet(message: types.Message):
     user_modes[message.chat.id] = "sheet"
     await message.answer("📊 Sheet mode enabled", reply_markup=main_keyboard)
-
+ 
 @dp.message(lambda m: m.text == "💬 Chat")
 async def btn_chat(message: types.Message):
     user_modes[message.chat.id] = "chat"
     await message.answer("💬 Chat mode enabled", reply_markup=main_keyboard)
-
+ 
 @dp.message(lambda m: m.text == "📊 Sheets")
 async def btn_sheet(message: types.Message):
     user_modes[message.chat.id] = "sheet"
     await message.answer("📊 Sheet mode enabled", reply_markup=main_keyboard)
-
+ 
 # ---- PHOTO ----
 @dp.message(lambda m: m.photo)
 async def handle_photo(message: types.Message):
     try:
         chat_id = message.chat.id
         mode = user_modes.get(chat_id, "chat")
-
+ 
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         b64 = base64.b64encode((await bot.download_file(file.file_path)).read()).decode()
-
+ 
         if mode == "chat":
             history = chat_history.get(chat_id, [])
             user_text = message.caption or "Analyze image"
@@ -513,12 +513,12 @@ async def handle_photo(message: types.Message):
             history.append({"role": "assistant", "content": answer})
             chat_history[chat_id] = history[-MAX_CHAT_HISTORY:]
             await message.answer(answer)
-
+ 
         elif mode == "sheet":
             spreadsheet = active_spreadsheets.get(chat_id, default_spreadsheet)
             caption = message.caption or "Reproduce this table structure exactly. Create a new sheet, write all headers and sample rows, format the header row."
             status_msg = await message.answer("🔍 Анализирую изображение...")
-
+ 
             sent_statuses = [status_msg]
             async def update_status(text):
                 try:
@@ -526,17 +526,17 @@ async def handle_photo(message: types.Message):
                 except Exception:
                     m = await message.answer(text)
                     sent_statuses.append(m)
-
+ 
             user_content = [
                 {"type": "text", "text": caption},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
             ]
             result = await run_agent(user_content, spreadsheet, chat_id, update_status)
             await sent_statuses[-1].edit_text(result)
-
+ 
     except Exception as e:
         await message.answer(f"PHOTO ERROR:\n{e}")
-
+ 
 # ---- TEXT ----
 @dp.message()
 async def handle_text(message: types.Message):
@@ -544,10 +544,10 @@ async def handle_text(message: types.Message):
         text = message.text
         if not text or text.startswith("/") or text in ["💬 Chat", "📊 Sheets"]:
             return
-
+ 
         chat_id = message.chat.id
         mode = user_modes.get(chat_id, "chat")
-
+ 
         # CHAT MODE
         if mode == "chat":
             history = chat_history.get(chat_id, [])
@@ -564,7 +564,7 @@ async def handle_text(message: types.Message):
             chat_history[chat_id] = history[-MAX_CHAT_HISTORY:]
             await message.answer(answer)
             return
-
+ 
         # SHEET MODE
         if mode == "sheet":
             # Подключение нового документа по URL
@@ -578,34 +578,34 @@ async def handle_text(message: types.Message):
                 except Exception as e:
                     await message.answer(f"❌ Не удалось открыть:\n{e}")
                 return
-
+ 
             spreadsheet = active_spreadsheets.get(chat_id, default_spreadsheet)
-
+ 
             # Статус — редактируем одно сообщение
             status_msg = await message.answer("⚙️ Работаю...")
             sent_statuses = [status_msg]
-
+ 
             async def update_status(text_s):
                 try:
                     await sent_statuses[-1].edit_text(text_s)
                 except Exception:
                     m = await message.answer(text_s)
                     sent_statuses.append(m)
-
+ 
             result = await run_agent(text, spreadsheet, chat_id, update_status)
             try:
                 await sent_statuses[-1].edit_text(result)
             except Exception:
                 await message.answer(result)
-
+ 
     except Exception as e:
         await message.answer(f"ERROR:\n{e}")
-
+ 
 # =========================================
 # MAIN
 # =========================================
 async def main():
     await dp.start_polling(bot)
-
+ 
 if __name__ == "__main__":
     asyncio.run(main())
