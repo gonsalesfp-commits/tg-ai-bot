@@ -54,7 +54,7 @@ sheet_history: dict[int, list] = {}
 active_spreadsheets: dict[int, gspread.Spreadsheet] = {}
 MAX_CHAT_HISTORY = 40
 MAX_SHEET_HISTORY = 20
-MAX_AGENT_STEPS = 8  # максимум шагов агента за одно сообщение
+MAX_AGENT_STEPS = 20  # максимум шагов агента за одно сообщение
  
 # =========================================
 # KEYBOARD
@@ -359,17 +359,20 @@ You work in an agent loop: you can call tools multiple times until the task is c
 Always read data before editing it — never guess cell values.
  
 RULES:
-- Always call read_range first when you need to see current data
-- After completing all actions, call done() with a short Russian summary
+- Call read_range only when you genuinely need to see existing data before editing
+- If the user provides data in the message (CSV content, values) — use it directly, do NOT read the sheet first
+- If the task is "write X to column Y in sheet Z" and you have the value — just write_range immediately
+- After completing all actions call done() with a short Russian summary in Russian
 - Communicate with the user in Russian
-- If a task requires multiple steps, do them all before calling done()
-- Never fabricate data you haven't read — use read_range to check
+- Be efficient: minimum tool calls needed to complete the task
  
-EXAMPLES of multi-step tasks:
-- "убери пробелы в строках 20-26" → read_range → process values → write_range → done
+STEP EFFICIENCY GUIDE (use as few steps as possible):
+- "разнеси данные из репорта в колонку" → write_range → done  (data already provided, no need to read first)
+- "убери пробелы в строках 20-26" → read_range → write_range(fixed) → done
 - "перенеси строки 27-33 в строку 20" → read_range(27:33) → write_range(A20) → clear_range(27:33) → done
-- "построй таблицу" → create_sheet → write_range (headers+data) → format_header → done
+- "построй таблицу" → create_sheet → write_range → format_header → done
 - "удали все вкладки кроме вкладки 5" → list_sheets → delete_sheet × N → done
+- "найди нужную колонку и запиши" → read_range(row1 only for headers) → write_range → done
 """
  
 # =========================================
